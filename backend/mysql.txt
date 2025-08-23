@@ -1,0 +1,183 @@
+-- 1) Create & switch to the database
+CREATE DATABASE IF NOT EXISTS `dev`
+  DEFAULT CHARACTER SET = utf8mb4
+  DEFAULT COLLATE = utf8mb4_unicode_ci;
+USE `dev`;
+
+-- 2) Table: individual
+CREATE TABLE `individual` (
+  `id`            BINARY(16)            NOT NULL PRIMARY KEY,
+  `first_name`    VARCHAR(100)          NOT NULL,
+  `last_name`     VARCHAR(100)          NOT NULL,
+  `grade`         ENUM(
+                     'Pre-K','K',
+                     '1','2','3','4','5','6','7','8','9','10','11','12',
+                     'Adult'
+                   )                    NOT NULL,
+  `special`       BOOLEAN               NOT NULL DEFAULT FALSE,
+  `created_by`    BINARY(16)            NULL,
+  `active`        DATE                  NOT NULL DEFAULT '9999-12-31',
+  `created_at`    TIMESTAMP             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`    TIMESTAMP             NOT NULL DEFAULT CURRENT_TIMESTAMP 
+                                          ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (`created_by`)
+    REFERENCES `individual`(`id`)
+    ON DELETE SET NULL
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
+
+-- 3) Table: credentials
+CREATE TABLE `credentials` (
+  `id`            BINARY(16)            NOT NULL PRIMARY KEY,
+  `email`         VARCHAR(255)          NOT NULL UNIQUE,
+  `password`      VARCHAR(255)          NOT NULL,
+  `created_by`    BINARY(16)            NULL,
+  `active`        DATE                  NOT NULL DEFAULT '9999-12-31',
+  `created_at`    TIMESTAMP             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`    TIMESTAMP             NOT NULL DEFAULT CURRENT_TIMESTAMP 
+                                          ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (`id`) 
+    REFERENCES `individual`(`id`) ON DELETE CASCADE,
+  FOREIGN KEY (`created_by`)
+    REFERENCES `individual`(`id`) ON DELETE SET NULL
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
+
+-- 4) Table: address
+CREATE TABLE `address` (
+  `id`             BINARY(16)           NOT NULL PRIMARY KEY,
+  `care_of`        VARCHAR(255)         NULL,
+  `address1`       VARCHAR(255)         NOT NULL,
+  `address2`       VARCHAR(255)         NULL,
+  `city`           VARCHAR(100)         NOT NULL,
+  `state_province` ENUM(
+                     'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN',
+                     'IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV',
+                     'NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN',
+                     'TX','UT','VT','VA','WA','WV','WI','WY',
+                     'DC','AS','GU','MP','PR','VI'
+                   )                   NOT NULL,
+  `zipcode`        VARCHAR(20)          NOT NULL,
+  `created_at`     TIMESTAMP            NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`     TIMESTAMP            NOT NULL DEFAULT CURRENT_TIMESTAMP 
+                                          ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
+
+-- 5) Table: denomination
+CREATE TABLE `denomination` (
+  `id`            INT UNSIGNED          NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `name`          VARCHAR(50)           NOT NULL,
+  `active`        DATE                  NOT NULL DEFAULT '9999-12-31',
+  `created_at`    TIMESTAMP             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`    TIMESTAMP             NOT NULL DEFAULT CURRENT_TIMESTAMP 
+                                          ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
+
+-- 6) Table: entity
+--    (created_by remains a simple nullable BINARY(16), no FK)
+CREATE TABLE `entity` (
+  `id`                         BINARY(16)    NOT NULL PRIMARY KEY,
+  `name`                       VARCHAR(255)  NOT NULL,
+  `address_id`                 BINARY(16)    NOT NULL,
+  `support_organization_id`    BINARY(16)    NULL,
+  `type`                       ENUM('NATIONAL','REGIONAL','DISTRICT','CHURCH') NOT NULL,
+  `denomination_id`            INT UNSIGNED  NULL DEFAULT NULL,
+  `created_by`                 BINARY(16)    NULL,
+  `active`                     DATE          NOT NULL DEFAULT '9999-12-31',
+  `created_at`                 TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`                 TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP 
+                                          ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (`address_id`)
+    REFERENCES `address`(`id`)            ON DELETE CASCADE,
+  FOREIGN KEY (`support_organization_id`)
+    REFERENCES `entity`(`id`)             ON DELETE SET NULL,
+  FOREIGN KEY (`denomination_id`)
+    REFERENCES `denomination`(`id`)       ON DELETE RESTRICT
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
+
+-- 7) Table: event
+CREATE TABLE `event` (
+  `id`                          BINARY(16)    NOT NULL PRIMARY KEY,
+  `title`                       VARCHAR(255)  NOT NULL,
+  `type`                        ENUM('NATIONAL','REGIONAL','DISTRICT','CHURCH') NOT NULL,
+  `denomination_id`             INT UNSIGNED  NOT NULL,
+  `address_id`                  BINARY(16)    NOT NULL,
+  `support_organization_id`     BINARY(16)    NULL,
+  `start_date`                  DATE          NOT NULL,
+  `end_date`                    DATE          NOT NULL,
+  `start`                       DATETIME      NOT NULL,
+  `finish`                      DATETIME      NOT NULL,
+  `comments`                    TEXT          NULL,
+  `created_by`                  BINARY(16)    NULL,
+  `active`                      DATE          NOT NULL DEFAULT '9999-12-31',
+  `created_at`                  TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`                  TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP 
+                                          ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (`denomination_id`)
+    REFERENCES `denomination`(`id`)       ON DELETE RESTRICT,
+  FOREIGN KEY (`address_id`)
+    REFERENCES `address`(`id`)            ON DELETE CASCADE,
+  FOREIGN KEY (`support_organization_id`)
+    REFERENCES `entity`(`id`)             ON DELETE SET NULL,
+  FOREIGN KEY (`created_by`)
+    REFERENCES `individual`(`id`)         ON DELETE SET NULL
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
+
+-- 8) Table: role_assignment
+CREATE TABLE `role_assignment` (
+  `individual_id` BINARY(16)            NOT NULL,
+  `target_type`   ENUM('ENTITY','EVENT') NOT NULL,
+  `target_id`     BINARY(16)            NOT NULL,
+  `role`          ENUM('CMC','CDR','POG','COACH','OFFICIAL','ADMIN') NOT NULL,
+  `active`        DATE                  NOT NULL DEFAULT '9999-12-31',
+  `created_at`    TIMESTAMP             NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`    TIMESTAMP             NOT NULL DEFAULT CURRENT_TIMESTAMP 
+                                          ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`individual_id`,`target_type`,`target_id`),
+  INDEX `ix_role_target` (`target_type`,`target_id`),
+  FOREIGN KEY (`individual_id`)
+    REFERENCES `individual`(`id`)         ON DELETE CASCADE
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
+
+
+-- Example inserts:
+
+INSERT INTO `address` (
+  `id`, `care_of`, `address1`, `address2`, `city`, `state_province`, `zipcode`
+) VALUES (
+  UUID_TO_BIN('00000000-0000-0000-0000-000000000000',1),
+  NULL,
+  '1445 N. Boonville Avenue',
+  NULL,
+  'Springfield',
+  'MO',
+  '65802'
+);
+
+INSERT INTO `entity` (
+  `id`, `name`, `address_id`, `support_organization_id`,
+  `type`, `denomination_id`, `created_by`, `active`, `created_at`, `updated_at`
+) VALUES (
+  UUID_TO_BIN('00000000-0000-0000-0000-000000000000',1),
+  'Kid\'s Ministries',
+  UUID_TO_BIN('00000000-0000-0000-0000-000000000000',1),
+  UUID_TO_BIN('00000000-0000-0000-0000-000000000000',1),
+  'NATIONAL',
+  NULL,
+  UUID_TO_BIN('00000000-0000-0000-0000-000000000000',1),
+  '9999-12-31',
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP
+);

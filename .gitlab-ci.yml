@@ -1,0 +1,47 @@
+stages:
+  - backend
+  - frontend
+
+default:
+  cache:
+    key: "${CI_PROJECT_NAME}"
+    paths:
+      - .npm/
+  variables:
+    NPM_CONFIG_CACHE: "$CI_PROJECT_DIR/.npm"
+
+backend:install-test:
+  stage: backend
+  image: node:20
+  before_script:
+    - cd backend
+    - npm ci
+  script:
+    - npm run lint
+    - npm test
+  artifacts:
+    when: always
+    paths:
+      - backend
+    expire_in: 1 week
+  only:
+    - merge_requests
+    - branches
+    - tags
+
+frontend:build:
+  stage: frontend
+  image: node:20
+  before_script:
+    - cd frontend/kidsmin-portal
+    - if [ -f package.json ]; then npm ci; else echo "Angular app not yet committed"; fi
+  script:
+    - if [ -f package.json ]; then npm run build; else echo "Skipping build (no Angular app)"; fi
+  artifacts:
+    paths:
+      - frontend/kidsmin-portal/dist/
+    expire_in: 1 week
+  only:
+    - merge_requests
+    - branches
+    - tags

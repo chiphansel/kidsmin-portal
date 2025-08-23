@@ -1,0 +1,19 @@
+# Node / Backend
+backend/node_modules/
+backend/.env
+backend/.env.*
+backend/npm-debug.log*
+backend/yarn.lock
+backend/package-lock.json
+
+# Angular / Frontend
+frontend/kidsmin-portal/node_modules/
+frontend/kidsmin-portal/.angular/
+frontend/kidsmin-portal/dist/
+frontend/kidsmin-portal/.env
+frontend/kidsmin-portal/.env.*
+
+# OS / editors
+.DS_Store
+Thumbs.db
+*.log

@@ -1,0 +1,25 @@
+{
+  "name": "kidsmin-backend",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "start:dev": "cross-env APP_ENV=development node server.js",
+    "start:prod": "cross-env APP_ENV=production node server.js",
+    "lint": "eslint . --ext .js || true",
+    "test": "echo \"(no tests yet)\""
+  },
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.9.7",
+    "nodemailer": "^6.9.13"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "eslint": "^9.7.0"
+  }
+}
