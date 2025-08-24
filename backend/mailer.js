@@ -1,21 +1,24 @@
+// DROP-IN REPLACEMENT
+// Nodemailer transport + simple sendMail helper
 const nodemailer = require('nodemailer');
-
-const {
-  SMTP_HOST, SMTP_PORT, SMTP_SECURE,
-  SMTP_USER, SMTP_PASS, MAIL_FROM
-} = process.env;
+const { smtp } = require('./config');
 
 const transporter = nodemailer.createTransport({
-  host: SMTP_HOST,
-  port: Number(SMTP_PORT) || 587,
-  secure: String(SMTP_SECURE || 'false').toLowerCase() === 'true',
-  auth: SMTP_USER ? { user: SMTP_USER, pass: SMTP_PASS } : undefined
+  host: smtp.host,
+  port: smtp.port,
+  secure: smtp.secure,
+  auth: smtp.user ? { user: smtp.user, pass: smtp.pass } : undefined
 });
 
 async function sendMail({ to, subject, html, text }) {
+  if (!to) throw new Error('Email "to" is required');
   return transporter.sendMail({
-    from: MAIL_FROM || SMTP_USER,
-    to, subject, text, html
+    from: smtp.from,
+    to,
+    subject,
+    text,
+    html
   });
 }
+
 module.exports = { sendMail };

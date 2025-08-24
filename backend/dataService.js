@@ -1,172 +1,202 @@
-// dataService.js
-const pool   = require('./db');
-const { v4: uuidv4 } = require('uuid');
-const bcrypt = require('bcrypt');
-const jwt    = require('jsonwebtoken');
-const { jwtSecret, frontendUrl } = require('./config');
+// DROP-IN: Centralized DB access helpers for KidsMin API
+// Uses mysql2/promise pool from ./db
 
-// --- Authenticate via stored proc (email + password) → JWT + roles ---
-async function authenticate({ email, password }) {
-  const [resultSets] = await pool.execute(
-    'CALL sp_authenticate(?,?)',
-    [email, password]
-  );
+const pool = require('./db');
 
-  const [profile] = resultSets[0];
-  if (!profile) throw new Error('Invalid credentials');
-
-  const token = jwt.sign({ sub: profile.id }, jwtSecret, { expiresIn: '1h' });
-
-  const roles = resultSets[1].map(r => ({
-    targetType: r.target_type,
-    targetId:   r.targetId,
-    targetName: r.targetName,
-    role:       r.role,
-    active:     r.active,
-    createdAt:  r.created_at,
-    updatedAt:  r.updated_at
-  }));
-
-  return { token, roles };
+// ---------- small helpers ----------
+async function q(conn, sql, params = []) {
+  // Run on a transaction connection if provided, otherwise on the pool
+  if (conn && typeof conn.query === 'function') {
+    return conn.query(sql, params);
+  }
+  return pool.query(sql, params);
 }
 
-// --- Refresh an existing JWT ---
-function refreshToken(oldToken) {
+async function withTransaction(taskFn) {
+  const conn = await pool.getConnection();
   try {
-    const { sub } = jwt.verify(oldToken, jwtSecret);
-    return jwt.sign({ sub }, jwtSecret, { expiresIn: '1h' });
-  } catch {
-    throw new Error('Invalid token');
+    await conn.beginTransaction();
+    const result = await taskFn(conn);
+    await conn.commit();
+    return result;
+  } catch (e) {
+    try { await conn.rollback(); } catch (_) {}
+    throw e;
+  } finally {
+    conn.release();
   }
 }
 
-// --- Create a brand-new user (individual + credentials + JWT) ---
-async function createUser({ firstName, lastName, grade, special, email, password, createdBy }) {
-  const id = uuidv4();
-  await pool.execute(
-    'CALL sp_create_individual(?,?,?,?,?,?)',
-    [id, firstName, lastName, grade, special ? 1 : 0, createdBy]
-  );
-  const hash = await bcrypt.hash(password, 12);
-  await pool.execute(
-    'CALL sp_create_credentials(?,?,?,?)',
-    [id, email, hash, createdBy]
-  );
-  const token = jwt.sign({ sub: id }, jwtSecret, { expiresIn: '1h' });
-  return { id, token };
+// ---------- health ----------
+async function ping() {
+  const [rows] = await q(null, 'SELECT 1');
+  return rows;
 }
 
-// --- Create credentials for an existing individual + return JWT + message ---
-async function createCredentialsForExistingIndividual({ individualId, email, password }) {
-  const [[ind]] = await pool.execute(
-    'SELECT first_name, last_name FROM individual WHERE id = UUID_TO_BIN(?,1) LIMIT 1',
-    [individualId]
-  );
-  if (!ind) throw new Error(`No individual found with id ${individualId}`);
-  const fullName = `${ind.first_name} ${ind.last_name}`;
-
-  const hash = await bcrypt.hash(password, 12);
-  await pool.execute(
-    'CALL sp_create_credentials(?,?,?,?)',
-    [individualId, email, hash, individualId]
-  );
-
-  const token = jwt.sign({ sub: individualId }, jwtSecret, { expiresIn: '1h' });
-  const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
-  const loginUrl  = `${frontendUrl}/login?token=${token}`;
-  const message   = `
-Hello ${fullName},
-
-Your credentials have been created. Please log in before ${expiresAt.toLocaleString()}:
-
-${loginUrl}
-
-If you did not request this, please ignore.
-  `.trim();
-
-  return { id: individualId, name: fullName, email, token, loginUrl, expiresAt, message };
+// ---------- admin bootstrap / existence ----------
+async function adminExists() {
+  const [rows] = await q(null, `SELECT 1 FROM role_assignment WHERE role='ADMIN' LIMIT 1`);
+  return rows.length > 0;
 }
 
-// --- Helpers to fetch ENUM values from MySQL ---
-async function getEntityTypes() {
-  const [[col]] = await pool.query("SHOW COLUMNS FROM entity LIKE 'type'");
-  return col.Type
-    .match(/^enum\((.*)\)$/)[1]
-    .split(',')
-    .map(s => s.slice(1, -1));
+async function ensureNationalEntity(conn) {
+  const [rows] = await q(conn, `SELECT id FROM entity WHERE level='NATIONAL' LIMIT 1`);
+  if (rows.length) return rows[0].id;
+
+  const [ins] = await q(conn, `
+    INSERT INTO entity (name, level, created_at)
+    VALUES ('National Office', 'NATIONAL', CURRENT_TIMESTAMP)
+  `);
+  return ins.insertId;
 }
 
-async function getIndividualGrades() {
-  const [[col]] = await pool.query("SHOW COLUMNS FROM individual LIKE 'grade'");
-  return col.Type
-    .match(/^enum\((.*)\)$/)[1]
-    .split(',')
-    .map(s => s.slice(1, -1));
+async function assignRole(conn, { individualId, targetType = 'ENTITY', targetId, role }) {
+  if (!individualId || !targetId || !role) {
+    throw new Error('assignRole requires individualId, targetId, role');
+  }
+  const [ins] = await q(conn, `
+    INSERT INTO role_assignment
+      (individual_id, target_type, target_id, role, active, created_at, updated_at)
+    VALUES (?, ?, ?, ?, '9999-12-31', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+  `, [individualId, targetType, targetId, role]);
+  return ins.insertId;
 }
 
-async function getRoleAssignmentRoles() {
-  const [[col]] = await pool.query("SHOW COLUMNS FROM role_assignment LIKE 'role'");
-  return col.Type
-    .match(/^enum\((.*)\)$/)[1]
-    .split(',')
-    .map(s => s.slice(1, -1));
-}
-
-// --- NEW: Helper to fetch all state_province values ---
-async function getStateProvinces() {
-  const [[col]] = await pool.query("SHOW COLUMNS FROM address LIKE 'state_province'");
-  return col.Type
-    .match(/^enum\((.*)\)$/)[1]
-    .split(',')
-    .map(s => s.slice(1, -1));
-}
-
-// --- Create a new individual ---
-async function createIndividual({ firstName, lastName, grade, special, createdBy }) {
-  const id = uuidv4();
-  await pool.execute(`
+// ---------- individuals ----------
+async function createIndividual(conn, { firstName, lastName, grade = 'Adult', special = false, createdBy = null }) {
+  if (!firstName || !lastName || !grade) {
+    throw new Error('Missing firstName, lastName, or grade');
+  }
+  const [ins] = await q(conn, `
     INSERT INTO individual
-      (id, first_name, last_name, grade, special, created_by, active, created_at, updated_at)
-    VALUES
-      (UUID_TO_BIN(?,1), ?, ?, ?, ?, UUID_TO_BIN(?,1), '9999-12-31', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-  `, [id, firstName, lastName, grade, special ? 1 : 0, createdBy]);
-  return id;
+      (first_name, last_name, grade, special, created_by, created_at)
+    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  `, [firstName, lastName, grade, special ? 1 : 0, createdBy]);
+  return ins.insertId;
 }
 
-// --- Create a new entity ---
-async function createEntity({ name, addressId, supportOrganizationId, type, denominationId, createdBy }) {
-  const id = uuidv4();
-  await pool.execute(`
-    INSERT INTO entity
-      (id, name, address_id, support_organization_id, type, denomination_id, created_by, active, created_at, updated_at)
-    VALUES
-      (UUID_TO_BIN(?,1), ?, UUID_TO_BIN(?,1), IF(? IS NULL, NULL, UUID_TO_BIN(?,1)), ?, ?, UUID_TO_BIN(?,1), '9999-12-31', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-  `, [id, name, addressId, supportOrganizationId, type, denominationId, createdBy]);
-  return id;
+async function getIndividualById(id) {
+  const [rows] = await q(null, `SELECT * FROM individual WHERE id=?`, [id]);
+  return rows[0] || null;
 }
 
-// --- Create a new event ---
-async function createEvent({ title, type, denominationId, addressId, supportOrganizationId, startDate, endDate, start, finish, comments, createdBy }) {
-  const id = uuidv4();
-  await pool.execute(`
-    INSERT INTO event
-      (id, title, type, denomination_id, address_id, support_organization_id, start_date, end_date, start, finish, comments, created_by, created_at, updated_at)
-    VALUES
-      (UUID_TO_BIN(?,1), ?, ?, ?, UUID_TO_BIN(?,1), IF(? IS NULL, NULL, UUID_TO_BIN(?,1)), ?, ?, ?, ?, ?, UUID_TO_BIN(?,1), CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-  `, [id, title, type, denominationId, addressId, supportOrganizationId, startDate, endDate, start, finish, comments, createdBy]);
-  return id;
+// ---------- credentials ----------
+async function getCredentialsByEmail(email) {
+  const [rows] = await q(null, `
+    SELECT c.*, i.id AS individualId
+      FROM credentials c
+      JOIN individual i ON i.id = c.individual_id
+     WHERE c.email = ?
+     LIMIT 1
+  `, [email]);
+  return rows[0] || null;
+}
+
+async function getCredentialsByIndividualId(individualId) {
+  const [rows] = await q(null, `
+    SELECT * FROM credentials WHERE individual_id=? LIMIT 1
+  `, [individualId]);
+  return rows[0] || null;
+}
+
+async function upsertCredentialsForIndividual(conn, { individualId, email }) {
+  if (!individualId || !email) {
+    throw new Error('upsertCredentialsForIndividual requires individualId and email');
+  }
+  const [rows] = await q(conn, `SELECT id FROM credentials WHERE individual_id=? LIMIT 1`, [individualId]);
+  if (rows.length) {
+    const credId = rows[0].id;
+    await q(conn, `UPDATE credentials SET email=? WHERE id=?`, [email, credId]);
+    return credId;
+  }
+  const [ins] = await q(conn, `
+    INSERT INTO credentials
+      (individual_id, email, password_hash, is_active, created_at)
+    VALUES (?, ?, NULL, 0, CURRENT_TIMESTAMP)
+  `, [individualId, email]);
+  return ins.insertId;
+}
+
+async function insertCredentials(conn, { individualId, email }) {
+  const [ins] = await q(conn, `
+    INSERT INTO credentials
+      (individual_id, email, password_hash, is_active, created_at)
+    VALUES (?, ?, NULL, 0, CURRENT_TIMESTAMP)
+  `, [individualId, email]);
+  return ins.insertId;
+}
+
+async function setCredentialPasswordActive(conn, { credentialsId, passwordHash }) {
+  if (!credentialsId || !passwordHash) {
+    throw new Error('setCredentialPasswordActive requires credentialsId and passwordHash');
+  }
+  await q(conn, `
+    UPDATE credentials
+       SET password_hash=?, is_active=1, updated_at=CURRENT_TIMESTAMP
+     WHERE id=?
+  `, [passwordHash, credentialsId]);
+}
+
+// ---------- roles for menu/dashboard ----------
+async function getActiveRolesForIndividual(individualId) {
+  const [rows] = await q(null, `
+    SELECT
+      ra.target_type AS targetType,
+      ra.target_id   AS targetId,
+      e.name         AS targetName,
+      e.level        AS targetLevel,
+      ra.role,
+      ra.active,
+      ra.created_at  AS createdAt,
+      ra.updated_at  AS updatedAt
+    FROM role_assignment ra
+    LEFT JOIN entity e ON e.id = ra.target_id
+    WHERE ra.individual_id = ?
+      AND ra.active = '9999-12-31'
+  `, [individualId]);
+  return rows;
+}
+
+// ---------- login helper ----------
+async function getLoginRowByEmail(email) {
+  const [rows] = await q(null, `
+    SELECT
+      c.id            AS credId,
+      c.password_hash AS password_hash,
+      c.is_active     AS is_active,
+      i.id            AS individualId
+    FROM credentials c
+    JOIN individual i ON i.id = c.individual_id
+    WHERE c.email = ?
+    LIMIT 1
+  `, [email]);
+  return rows[0] || null;
 }
 
 module.exports = {
-  authenticate,
-  refreshToken,
-  createUser,
-  createCredentialsForExistingIndividual,
-  getEntityTypes,
-  getIndividualGrades,
-  getRoleAssignmentRoles,
-  getStateProvinces,
+  // infra
+  ping,
+  withTransaction,
+
+  // admin/bootstrap
+  adminExists,
+  ensureNationalEntity,
+  assignRole,
+
+  // individuals
   createIndividual,
-  createEntity,
-  createEvent
+  getIndividualById,
+
+  // credentials
+  getCredentialsByEmail,
+  getCredentialsByIndividualId,
+  upsertCredentialsForIndividual,
+  insertCredentials,
+  setCredentialPasswordActive,
+
+  // roles
+  getActiveRolesForIndividual,
+
+  // login helper
+  getLoginRowByEmail
 };

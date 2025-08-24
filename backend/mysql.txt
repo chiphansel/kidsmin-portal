@@ -1,183 +1,102 @@
--- 1) Create & switch to the database
-CREATE DATABASE IF NOT EXISTS `dev`
-  DEFAULT CHARACTER SET = utf8mb4
-  DEFAULT COLLATE = utf8mb4_unicode_ci;
-USE `dev`;
+-- =========================================================
+-- KidsMin Portal — Initial Schema + Minimal Seed (MySQL 8)
+-- Events table explicitly removed
+-- =========================================================
 
--- 2) Table: individual
-CREATE TABLE `individual` (
-  `id`            BINARY(16)            NOT NULL PRIMARY KEY,
-  `first_name`    VARCHAR(100)          NOT NULL,
-  `last_name`     VARCHAR(100)          NOT NULL,
-  `grade`         ENUM(
-                     'Pre-K','K',
-                     '1','2','3','4','5','6','7','8','9','10','11','12',
-                     'Adult'
-                   )                    NOT NULL,
-  `special`       BOOLEAN               NOT NULL DEFAULT FALSE,
-  `created_by`    BINARY(16)            NULL,
-  `active`        DATE                  NOT NULL DEFAULT '9999-12-31',
-  `created_at`    TIMESTAMP             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at`    TIMESTAMP             NOT NULL DEFAULT CURRENT_TIMESTAMP 
-                                          ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (`created_by`)
-    REFERENCES `individual`(`id`)
-    ON DELETE SET NULL
-) ENGINE=InnoDB
-  DEFAULT CHARSET=utf8mb4
-  COLLATE=utf8mb4_unicode_ci;
+-- If you want to keep existing events data, comment these three lines
+SET FOREIGN_KEY_CHECKS = 0;
+SET FOREIGN_KEY_CHECKS = 1;
 
--- 3) Table: credentials
-CREATE TABLE `credentials` (
-  `id`            BINARY(16)            NOT NULL PRIMARY KEY,
-  `email`         VARCHAR(255)          NOT NULL UNIQUE,
-  `password`      VARCHAR(255)          NOT NULL,
-  `created_by`    BINARY(16)            NULL,
-  `active`        DATE                  NOT NULL DEFAULT '9999-12-31',
-  `created_at`    TIMESTAMP             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at`    TIMESTAMP             NOT NULL DEFAULT CURRENT_TIMESTAMP 
-                                          ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (`id`) 
-    REFERENCES `individual`(`id`) ON DELETE CASCADE,
-  FOREIGN KEY (`created_by`)
-    REFERENCES `individual`(`id`) ON DELETE SET NULL
-) ENGINE=InnoDB
-  DEFAULT CHARSET=utf8mb4
-  COLLATE=utf8mb4_unicode_ci;
+-- 0) Database
+CREATE DATABASE IF NOT EXISTS kidsmin_dev
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_0900_ai_ci;
+USE kidsmin_dev;
 
--- 4) Table: address
-CREATE TABLE `address` (
-  `id`             BINARY(16)           NOT NULL PRIMARY KEY,
-  `care_of`        VARCHAR(255)         NULL,
-  `address1`       VARCHAR(255)         NOT NULL,
-  `address2`       VARCHAR(255)         NULL,
-  `city`           VARCHAR(100)         NOT NULL,
-  `state_province` ENUM(
-                     'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN',
-                     'IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV',
-                     'NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN',
-                     'TX','UT','VT','VA','WA','WV','WI','WY',
-                     'DC','AS','GU','MP','PR','VI'
-                   )                   NOT NULL,
-  `zipcode`        VARCHAR(20)          NOT NULL,
-  `created_at`     TIMESTAMP            NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at`     TIMESTAMP            NOT NULL DEFAULT CURRENT_TIMESTAMP 
-                                          ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB
-  DEFAULT CHARSET=utf8mb4
-  COLLATE=utf8mb4_unicode_ci;
+-- 1) individuals
+CREATE TABLE IF NOT EXISTS individual (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  first_name   VARCHAR(80)  NOT NULL,
+  last_name    VARCHAR(80)  NOT NULL,
+  display_name VARCHAR(120) NOT NULL,
+  grade        VARCHAR(32)  NOT NULL DEFAULT 'Adult',
+  special      TINYINT(1)   NOT NULL DEFAULT 0,
+  created_by   BIGINT UNSIGNED NULL,
+  created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_individual_last_name (last_name),
+  KEY idx_individual_display_name (display_name),
+  CONSTRAINT fk_individual_created_by
+    FOREIGN KEY (created_by) REFERENCES individual(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
 
--- 5) Table: denomination
-CREATE TABLE `denomination` (
-  `id`            INT UNSIGNED          NOT NULL AUTO_INCREMENT PRIMARY KEY,
-  `name`          VARCHAR(50)           NOT NULL,
-  `active`        DATE                  NOT NULL DEFAULT '9999-12-31',
-  `created_at`    TIMESTAMP             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at`    TIMESTAMP             NOT NULL DEFAULT CURRENT_TIMESTAMP 
-                                          ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB
-  DEFAULT CHARSET=utf8mb4
-  COLLATE=utf8mb4_unicode_ci;
+-- 2) credentials (1:1 with individual; emails unique)
+CREATE TABLE IF NOT EXISTS credentials (
+  id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  individual_id  BIGINT UNSIGNED NOT NULL,
+  email          VARCHAR(254)    NOT NULL,
+  password_hash  VARCHAR(255)    DEFAULT NULL,
+  is_active      TINYINT(1)      NOT NULL DEFAULT 0,
+  created_at     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_credentials_individual (individual_id),
+  UNIQUE KEY uk_credentials_email (email),
+  CONSTRAINT fk_credentials_individual
+    FOREIGN KEY (individual_id) REFERENCES individual(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
 
--- 6) Table: entity
---    (created_by remains a simple nullable BINARY(16), no FK)
-CREATE TABLE `entity` (
-  `id`                         BINARY(16)    NOT NULL PRIMARY KEY,
-  `name`                       VARCHAR(255)  NOT NULL,
-  `address_id`                 BINARY(16)    NOT NULL,
-  `support_organization_id`    BINARY(16)    NULL,
-  `type`                       ENUM('NATIONAL','REGIONAL','DISTRICT','CHURCH') NOT NULL,
-  `denomination_id`            INT UNSIGNED  NULL DEFAULT NULL,
-  `created_by`                 BINARY(16)    NULL,
-  `active`                     DATE          NOT NULL DEFAULT '9999-12-31',
-  `created_at`                 TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at`                 TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP 
-                                          ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (`address_id`)
-    REFERENCES `address`(`id`)            ON DELETE CASCADE,
-  FOREIGN KEY (`support_organization_id`)
-    REFERENCES `entity`(`id`)             ON DELETE SET NULL,
-  FOREIGN KEY (`denomination_id`)
-    REFERENCES `denomination`(`id`)       ON DELETE RESTRICT
-) ENGINE=InnoDB
-  DEFAULT CHARSET=utf8mb4
-  COLLATE=utf8mb4_unicode_ci;
+-- 3) entity (hierarchical; DENOMINATION → NATIONAL → REGIONAL → DISTRICT → CHURCH)
+CREATE TABLE IF NOT EXISTS entity (
+  id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  name       VARCHAR(160)    NOT NULL,
+  level      ENUM('DENOMINATION','NATIONAL','REGIONAL','DISTRICT','CHURCH') NOT NULL,
+  parent_id  BIGINT UNSIGNED DEFAULT NULL,
+  created_at DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_entity_level (level),
+  KEY idx_entity_parent (parent_id),
+  UNIQUE KEY uk_entity_hierarchy (name, level, parent_id),
+  CONSTRAINT fk_entity_parent
+    FOREIGN KEY (parent_id) REFERENCES entity(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
 
--- 7) Table: event
-CREATE TABLE `event` (
-  `id`                          BINARY(16)    NOT NULL PRIMARY KEY,
-  `title`                       VARCHAR(255)  NOT NULL,
-  `type`                        ENUM('NATIONAL','REGIONAL','DISTRICT','CHURCH') NOT NULL,
-  `denomination_id`             INT UNSIGNED  NOT NULL,
-  `address_id`                  BINARY(16)    NOT NULL,
-  `support_organization_id`     BINARY(16)    NULL,
-  `start_date`                  DATE          NOT NULL,
-  `end_date`                    DATE          NOT NULL,
-  `start`                       DATETIME      NOT NULL,
-  `finish`                      DATETIME      NOT NULL,
-  `comments`                    TEXT          NULL,
-  `created_by`                  BINARY(16)    NULL,
-  `active`                      DATE          NOT NULL DEFAULT '9999-12-31',
-  `created_at`                  TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at`                  TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP 
-                                          ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (`denomination_id`)
-    REFERENCES `denomination`(`id`)       ON DELETE RESTRICT,
-  FOREIGN KEY (`address_id`)
-    REFERENCES `address`(`id`)            ON DELETE CASCADE,
-  FOREIGN KEY (`support_organization_id`)
-    REFERENCES `entity`(`id`)             ON DELETE SET NULL,
-  FOREIGN KEY (`created_by`)
-    REFERENCES `individual`(`id`)         ON DELETE SET NULL
-) ENGINE=InnoDB
-  DEFAULT CHARSET=utf8mb4
-  COLLATE=utf8mb4_unicode_ci;
+-- 4) role_assignment (who has which role on which entity)
+CREATE TABLE IF NOT EXISTS role_assignment (
+  id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  individual_id  BIGINT UNSIGNED NOT NULL,
+  target_type    ENUM('ENTITY')  NOT NULL DEFAULT 'ENTITY',
+  target_id      BIGINT UNSIGNED NOT NULL,
+  role           ENUM('CMC','CDR','POG','COACH','ADMIN') NOT NULL,
+  active         DATE            NOT NULL DEFAULT '9999-12-31',
+  created_at     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_role_assignment_individual (individual_id),
+  KEY idx_role_assignment_target (target_type, target_id),
+  KEY idx_role_assignment_active (active),
+  UNIQUE KEY uk_role_assignment_unique (individual_id, target_type, target_id, role, active),
+  CONSTRAINT fk_role_assignment_individual
+    FOREIGN KEY (individual_id) REFERENCES individual(id) ON DELETE CASCADE,
+  CONSTRAINT fk_role_assignment_entity
+    FOREIGN KEY (target_id)     REFERENCES entity(id)     ON DELETE CASCADE
+) ENGINE=InnoDB;
 
--- 8) Table: role_assignment
-CREATE TABLE `role_assignment` (
-  `individual_id` BINARY(16)            NOT NULL,
-  `target_type`   ENUM('ENTITY','EVENT') NOT NULL,
-  `target_id`     BINARY(16)            NOT NULL,
-  `role`          ENUM('CMC','CDR','POG','COACH','OFFICIAL','ADMIN') NOT NULL,
-  `active`        DATE                  NOT NULL DEFAULT '9999-12-31',
-  `created_at`    TIMESTAMP             NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at`    TIMESTAMP             NOT NULL DEFAULT CURRENT_TIMESTAMP 
-                                          ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`individual_id`,`target_type`,`target_id`),
-  INDEX `ix_role_target` (`target_type`,`target_id`),
-  FOREIGN KEY (`individual_id`)
-    REFERENCES `individual`(`id`)         ON DELETE CASCADE
-) ENGINE=InnoDB
-  DEFAULT CHARSET=utf8mb4
-  COLLATE=utf8mb4_unicode_ci;
+-- 5) Minimal seed: Denomination + National Office
+INSERT INTO entity (name, level, parent_id)
+VALUES ('Default Denomination', 'DENOMINATION', NULL)
+ON DUPLICATE KEY UPDATE name = VALUES(name);
 
-
--- Example inserts:
-
-INSERT INTO `address` (
-  `id`, `care_of`, `address1`, `address2`, `city`, `state_province`, `zipcode`
-) VALUES (
-  UUID_TO_BIN('00000000-0000-0000-0000-000000000000',1),
-  NULL,
-  '1445 N. Boonville Avenue',
-  NULL,
-  'Springfield',
-  'MO',
-  '65802'
-);
-
-INSERT INTO `entity` (
-  `id`, `name`, `address_id`, `support_organization_id`,
-  `type`, `denomination_id`, `created_by`, `active`, `created_at`, `updated_at`
-) VALUES (
-  UUID_TO_BIN('00000000-0000-0000-0000-000000000000',1),
-  'Kid\'s Ministries',
-  UUID_TO_BIN('00000000-0000-0000-0000-000000000000',1),
-  UUID_TO_BIN('00000000-0000-0000-0000-000000000000',1),
-  'NATIONAL',
-  NULL,
-  UUID_TO_BIN('00000000-0000-0000-0000-000000000000',1),
-  '9999-12-31',
-  CURRENT_TIMESTAMP,
-  CURRENT_TIMESTAMP
-);
+INSERT INTO entity (name, level, parent_id)
+SELECT 'National Office', 'NATIONAL', d.id
+FROM entity d
+WHERE d.name = 'Default Denomination'
+  AND d.level = 'DENOMINATION'
+  AND NOT EXISTS (
+    SELECT 1 FROM entity e
+     WHERE e.name = 'National Office'
+       AND e.level = 'NATIONAL'
+       AND e.parent_id = d.id
+  );
