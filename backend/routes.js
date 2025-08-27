@@ -2,7 +2,6 @@
 const express = require('express');
 const router = express.Router();
 
-const pool = require('./db');
 const { sendMail } = require('./mailer');
 const {
   validatePasswordPolicy, signAuthToken, signSetPasswordToken,
@@ -19,7 +18,7 @@ function isValidGrade(g) {
   return ['Adult', '12', '11', '10', '9'].includes(v);
 }
 
-// --- health (already have server-level /healthz, keep this too if you want) ---
+// --- extra health (optional alongside /healthz) ---
 router.get('/health', async (_req, res) => {
   try { await pool.query('SELECT 1'); res.json({ ok: true }); }
   catch (e) { res.status(503).json({ ok: false, error: e.message }); }
@@ -45,7 +44,6 @@ router.post('/createAdmin', async (req, res) => {
 
   const conn = await pool.getConnection();
   try {
-    // block if already exists
     const [adm] = await conn.query(`SELECT 1 FROM role_assignment WHERE role='ADMIN' LIMIT 1`);
     if (adm.length) return res.status(403).json({ error: 'Admin already exists.' });
 
@@ -85,7 +83,7 @@ router.post('/createAdmin', async (req, res) => {
       [individualId, nationalId]
     );
 
-    // **commit first** so we don't lose admin on email failure
+    // Commit BEFORE email so admin is durable even if SMTP fails
     await conn.commit();
 
     // 5) send set-password email (outside transaction)
@@ -106,6 +104,9 @@ router.post('/createAdmin', async (req, res) => {
     res.status(201).json({ ok: true });
   } catch (e) {
     try { await conn.rollback(); } catch {}
+    if (e && e.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'Email already in use.' });
+    }
     res.status(400).json({ error: e.message });
   } finally {
     conn.release();
@@ -122,7 +123,6 @@ router.post('/individuals', requireAuth, async (req, res) => {
     return res.status(422).json({ error: 'Invalid grade.' });
   }
 
-  // Trust the token, not the client, for "createdBy"
   const createdBy = req.user?.sub || null;
 
   try {
@@ -144,7 +144,6 @@ router.post('/auth/invite', requireAuth, async (req, res) => {
   email = normalizeEmail(email);
 
   try {
-    // upsert credentials for that individual
     const [rows] = await pool.query(`SELECT id FROM credentials WHERE individual_id=? LIMIT 1`, [individualId]);
     let credId = rows[0]?.id;
     if (!credId) {
@@ -169,6 +168,9 @@ router.post('/auth/invite', requireAuth, async (req, res) => {
 
     res.json({ ok: true });
   } catch (e) {
+    if (e && e.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'Email already in use.' });
+    }
     res.status(400).json({ error: e.message });
   }
 });
@@ -264,5 +266,102 @@ router.post('/login', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// --- (optional) current user/roles helper for Angular ---
+router.get('/me', requireAuth, async (req, res) => {
+  const individualId = req.user.sub;
+  try {
+    const [roles] = await pool.query(`
+      SELECT ra.target_type AS targetType,
+             ra.target_id   AS targetId,
+             e.name         AS targetName,
+             e.level        AS targetLevel,
+             ra.role,
+             ra.active,
+             ra.created_at  AS createdAt,
+             ra.updated_at  AS updatedAt
+        FROM role_assignment ra
+   LEFT JOIN entity e ON e.id = ra.target_id
+       WHERE ra.individual_id = ?
+         AND ra.active = '9999-12-31'
+    `, [individualId]);
+    res.json({ individualId, roles });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Password check → either start 2FA or issue JWT immediately
+router.post('/api/login', async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+
+    // fetch credentials + person name (BINARY ids)
+    const [rows] = await db.query(
+      `SELECT
+         c.id                 AS cred_id,          -- BINARY(16)
+         c.individual_id      AS individual_id,    -- BINARY(16)
+         BIN_TO_UUID(c.individual_id, 1) AS individual_uuid,
+         c.email,
+         c.email_lc,
+         c.password_hash,
+         c.twofa_enabled,
+         c.twofa_preferred,
+         i.first_name,
+         i.last_name
+       FROM credentials c
+       JOIN individual i ON i.id = c.individual_id
+       WHERE c.email_lc = LOWER(?) LIMIT 1`,
+      [email]
+    );
+
+    if (!rows || rows.length === 0) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    const row = rows[0];
+
+    if (!row.password_hash) {
+      return res.status(401).json({ error: 'Account has no password set' });
+    }
+
+    const ok = await bcrypt.compare(password, row.password_hash);
+    if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
+
+    // 2FA?
+    if (shouldRequire2fa(row)) {
+      await twofa.issueEmailChallenge({
+        credentialsIdBin: row.cred_id,               // Buffer from mysql2 for BINARY(16)
+        email: row.email,
+        displayName: `${row.first_name ?? ''} ${row.last_name ?? ''}`.trim(),
+        ip: req.ip,
+        ua: req.get('user-agent') || ''
+      });
+
+      const ttlMin = parseInt(process.env.TWOFA_CODE_TTL_MIN || '5', 10);
+      return res.json({
+        status: '2FA_REQUIRED',
+        method: 'email',
+        ttlMin,
+        emailMasked: maskEmail(row.email)
+      });
+    }
+
+    // no 2FA → issue JWT now
+    const token = jwt.sign(
+      { sub: row.individual_uuid }, // UUID string of the individual
+      config.JWT_SECRET,
+      { expiresIn: '8h' }
+    );
+    const roles = await fetchRolesForIndividual(row.individual_id);
+    return res.json({ token, roles });
+  } catch (err) {
+    console.error('POST /api/login error', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
 
 module.exports = router;

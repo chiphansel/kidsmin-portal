@@ -1,41 +1,46 @@
-require('dotenv').config(); 
+require('dotenv').config();
 
-const APP_ENV = process.env.APP_ENV || 'development';
+const NODE_ENV = process.env.NODE_ENV || 'development';
 
-function parseOrigins(input) {
-  if (!input) return true; // allow all in dev if not set
-  const list = String(input).split(',').map(s => s.trim()).filter(Boolean);
-  if (!list.length) return true;
-  return function originCheck(origin, cb) {
-    if (!origin) return cb(null, true); // same-origin / tools
-    return list.includes(origin) ? cb(null, true) : cb(new Error('CORS not allowed'), false);
-  };
+function required(name) {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing required env: ${name}`);
+  return v;
 }
 
 module.exports = {
-  env: APP_ENV,
-  port: Number(process.env.PORT || 3000),
-  jwtSecret: process.env.JWT_SECRET || 'change_me',
-  frontendUrl: process.env.FRONTEND_URL || 'http://localhost:4200',
-  corsOrigin: parseOrigins(process.env.CORS_ORIGIN),
+  NODE_ENV,
+  PORT: parseInt(process.env.PORT || '3000', 10),
 
   // DB
-  db: {
-    host: process.env.DB_HOST || 'localhost',
-    user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASS || '',
-    database: process.env.DB_NAME || 'kidsmin_dev',
-    waitForConnections: true,
-    connectionLimit: Number(process.env.DB_POOL || 10)
-  },
+  DB_HOST: process.env.DB_HOST || 'localhost',
+  DB_PORT: parseInt(process.env.DB_PORT || '3306', 10),
+  DB_USER: required('DB_USER'),
+  DB_PASS: required('DB_PASS'),
+  DB_NAME: required('DB_NAME'),
 
-  // Mail
-  smtp: {
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: String(process.env.SMTP_SECURE || 'false').toLowerCase() === 'true',
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-    from: process.env.MAIL_FROM || process.env.SMTP_USER
-  }
+  // Auth / JWT
+  JWT_SECRET: required('JWT_SECRET'),
+  FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:4200',
+  BASE_URL: process.env.BASE_URL || 'http://localhost:3000',
+
+  // SMTP (personal email account)
+  SMTP_HOST: required('SMTP_HOST'),
+  SMTP_PORT: parseInt(process.env.SMTP_PORT || '587', 10),
+  SMTP_SECURE: String(process.env.SMTP_SECURE || 'false').toLowerCase() === 'true',
+  SMTP_USER: required('SMTP_USER'),
+  SMTP_PASS: required('SMTP_PASS'),
+  SMTP_FROM: process.env.SMTP_FROM || `KidsMin <${process.env.SMTP_USER}>`,
+
+  // 2FA flags
+  TWOFA_ENABLED: String(process.env.TWOFA_ENABLED || 'true').toLowerCase() === 'true',
+  TWOFA_CHANNEL: process.env.TWOFA_CHANNEL || 'email',
+  TWOFA_CODE_TTL_MIN: parseInt(process.env.TWOFA_CODE_TTL_MIN || '5', 10),
+  TWOFA_CODE_LENGTH: parseInt(process.env.TWOFA_CODE_LENGTH || '6', 10),
+
+  // Allowed CORS origins (array)
+  CORS_ORIGINS: (process.env.CORS_ORIGINS || 'http://localhost:4200')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean),
 };

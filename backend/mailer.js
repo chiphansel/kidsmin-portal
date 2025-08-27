@@ -1,24 +1,49 @@
-// DROP-IN REPLACEMENT
-// Nodemailer transport + simple sendMail helper
 const nodemailer = require('nodemailer');
-const { smtp } = require('./config');
+const config = require('./config');
 
 const transporter = nodemailer.createTransport({
-  host: smtp.host,
-  port: smtp.port,
-  secure: smtp.secure,
-  auth: smtp.user ? { user: smtp.user, pass: smtp.pass } : undefined
+  host: config.SMTP_HOST,
+  port: config.SMTP_PORT,
+  secure: config.SMTP_SECURE, // true if 465
+  auth: {
+    user: config.SMTP_USER,
+    pass: config.SMTP_PASS,
+  },
 });
 
-async function sendMail({ to, subject, html, text }) {
-  if (!to) throw new Error('Email "to" is required');
-  return transporter.sendMail({
-    from: smtp.from,
+async function sendMail({ to, subject, text, html }) {
+  const info = await transporter.sendMail({
+    from: config.SMTP_FROM,
     to,
     subject,
     text,
-    html
+    html,
   });
+  return info;
 }
 
-module.exports = { sendMail };
+async function sendTwofaCode(toEmail, toName, code, ttlMin = 5) {
+  const subject = 'Your KidsMin 2FA code';
+  const text = [
+    `Hi ${toName || ''}`.trim() + ',',
+    '',
+    `Your verification code is: ${code}`,
+    '',
+    `It expires in ${ttlMin} minute(s).`,
+    '',
+    'If you did not request this code, you can ignore this email.',
+  ].join('\n');
+
+  const html = `
+    <p>Hi ${toName || ''},</p>
+    <p>Your verification code is:
+      <strong style="font-size:18px;letter-spacing:2px">${code}</strong>
+    </p>
+    <p>It expires in <strong>${ttlMin}</strong> minute(s).</p>
+    <p>If you did not request this code, you can ignore this email.</p>
+  `;
+
+  return sendMail({ to: toEmail, subject, text, html });
+}
+
+module.exports = { sendMail, sendTwofaCode };

@@ -1,88 +1,40 @@
-// backend/server.js
-require('dotenv').config();
-require('express-async-errors');
-
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
-const rateLimit = require('express-rate-limit');
+require('dotenv').config(); // loads .env.* into process.env
 
 const config = require('./config');
-const router = require('./routes');
-const pool = require('./db'); // used by /readyz
 
 const app = express();
 
-// --- env / config fallbacks ---
-const ENV  = config?.env || process.env.APP_ENV || process.env.NODE_ENV || 'development';
-const PORT = Number(process.env.PORT || config?.port || 3000);
-const ORIGIN = config?.corsOrigin || config?.frontendUrl || process.env.CORS_ORIGIN || process.env.FRONTEND_URL || 'http://localhost:4200';
+// CORS
+app.use(cors({
+  origin: config.CORS_ORIGINS, // array of allowed origins
+  credentials: false,
+}));
 
-// --- security hardening ---
-app.disable('x-powered-by');
-app.set('trust proxy', 1);
-app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+// Security / parsing / logs
+app.use(helmet());
+app.use(express.json({ limit: '1mb' }));
+app.use(morgan('dev'));
 
-// --- CORS ---
-const corsOptions = {
-  origin: ORIGIN,
-  credentials: true,
-  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization'],
-  optionsSuccessStatus: 204,
-};
-app.use(cors(corsOptions));
+// Health
+app.get('/healthz', (_req, res) => res.json({ ok: true, env: config.NODE_ENV }));
 
-// --- body parser ---
-app.use(express.json({ limit: '32kb' }));
+// API
+app.use('/api', require('./api/routes'));
 
-// --- logging ---
-app.use(morgan(ENV === 'production' ? 'combined' : 'dev'));
+// 404
+app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 
-// --- rate limits for auth endpoints ---
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-app.use('/api/login', authLimiter);
-app.use('/api/auth', authLimiter);
-
-// --- health endpoints ---
-app.get('/', (_req, res) => res.json({ ok: true, name: 'KidsMin API', env: ENV }));
-app.get('/healthz', (_req, res) => res.json({ status: 'ok' }));
-app.get('/readyz', async (_req, res) => {
-  try { await pool.query('SELECT 1'); res.json({ ready: true }); }
-  catch { res.status(503).json({ ready: false }); }
-});
-
-// --- main API router ---
-app.use('/api', router);
-
-// --- 404 ---
-app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
-
-// --- error handler ---
+// Error handler
 app.use((err, _req, res, _next) => {
   console.error('[ERROR]', err);
-  const status = (err && Number.isInteger(err.status)) ? err.status : 500;
-  const msg = status >= 500 ? 'Server error' : (err.message || 'Request error');
-  res.status(status).json({ error: msg });
+  res.status(500).json({ error: 'Server error' });
 });
 
-// --- start & graceful shutdown ---
-const server = app.listen(PORT, () => {
-  console.log(`KidsMin API listening on http://localhost:${PORT} [${ENV}] (origin: ${ORIGIN})`);
+const port = config.PORT;
+app.listen(port, () => {
+  console.log(`KidsMin backend listening on http://localhost:${port}`);
 });
-
-function shutdown(signal) {
-  console.log(`\n${signal} received, closing server...`);
-  server.close(() => {
-    console.log('Server closed. Bye!');
-    process.exit(0);
-  });
-}
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT',  () => shutdown('SIGINT'));

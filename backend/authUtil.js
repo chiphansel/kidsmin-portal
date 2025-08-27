@@ -1,41 +1,44 @@
-// JWT helpers + password policy + hashing
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcrypt');
-const { jwtSecret, frontendUrl } = require('./config');
-
-const PASSWORD_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{12,}$/;
+const bcrypt = require('bcryptjs');
+const config = require('./config');
 
 function validatePasswordPolicy(pw) {
-  return PASSWORD_REGEX.test(pw || '');
-}
-
-function signAuthToken(payload, expiresIn = '12h') {
-  return jwt.sign(payload, jwtSecret, { expiresIn });
-}
-
-function signSetPasswordToken(credId, expiresIn = '24h') {
-  return jwt.sign({ typ: 'setpwd', cid: credId }, jwtSecret, { expiresIn });
-}
-
-function verifyToken(token) {
-  return jwt.verify(token, jwtSecret);
+  const s = String(pw || '');
+  if (s.length < 12) return false;
+  return /[A-Z]/.test(s) && /[a-z]/.test(s) && /[0-9]/.test(s) && /[^A-Za-z0-9]/.test(s);
 }
 
 function buildSetPasswordUrl(token) {
-  return `${frontendUrl}/set-password?token=${encodeURIComponent(token)}`;
+  const base = config.FRONTEND_URL.replace(/\/+$/, '');
+  return `${base}/set-password?token=${encodeURIComponent(token)}`;
+}
+
+// Accept Buffer (BINARY(16)) or string
+function signSetPasswordToken(credentialsId) {
+  const cid =
+    Buffer.isBuffer(credentialsId) ? credentialsId.toString('base64url')
+    : typeof credentialsId === 'string' ? credentialsId
+    : String(credentialsId);
+
+  return jwt.sign(
+    { typ: 'setpwd', cid },
+    config.JWT_SECRET,
+    { expiresIn: '24h' }
+  );
+}
+
+function verifyToken(token) {
+  return jwt.verify(token, config.JWT_SECRET);
 }
 
 async function hashPassword(pw) {
-  const saltRounds = 12;
-  return bcrypt.hash(pw, saltRounds);
+  return bcrypt.hash(pw, 10);
 }
 
 module.exports = {
-  PASSWORD_REGEX,
   validatePasswordPolicy,
-  signAuthToken,
+  buildSetPasswordUrl,
   signSetPasswordToken,
   verifyToken,
-  buildSetPasswordUrl,
-  hashPassword
+  hashPassword,
 };

@@ -1,17 +1,19 @@
-// backend/authMiddleware.js
-const { verifyToken } = require('./authUtil');
+const jwt = require('jsonwebtoken');
+const config = require('./config');
 
-// Usage: app.use('/secure', requireAuth, handler)
 function requireAuth(req, res, next) {
-  const hdr = req.headers.authorization || '';
-  const m = hdr.match(/^Bearer\s+(.+)$/i);
-  if (!m) return res.status(401).json({ error: 'Missing token' });
-
+  const header = req.get('authorization') || req.get('Authorization');
+  if (!header || !header.toLowerCase().startsWith('bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const token = header.slice(7);
   try {
-    req.user = verifyToken(m[1]); // expects payload like { sub, cred, exp, ... }
-    return next();
-  } catch {
-    return res.status(401).json({ error: 'Invalid token' });
+    const payload = jwt.verify(token, config.JWT_SECRET);
+    // payload.sub should be the UUID string of the individual
+    req.user = { sub: payload.sub };
+    next();
+  } catch (e) {
+    return res.status(401).json({ error: 'Unauthorized' });
   }
 }
 
