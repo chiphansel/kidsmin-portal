@@ -1,227 +1,313 @@
--- =========================================================
--- KidsMin Portal — fresh schema (MySQL 8.0+)
--- =========================================================
+-- =====================================================================
+-- KidsMin Portal — Full Schema (UUID/BINARY(16) + Seeded Entities)
+-- MySQL 8.x
+-- UUIDs use UUID_TO_BIN(uuid, 1) / BIN_TO_UUID(bin, 1) for index locality.
+-- CHANGE: denomination.id is BIGINT AUTO_INCREMENT (not UUID).
+-- =====================================================================
 
--- Create database (adjust names as you wish)
-CREATE DATABASE IF NOT EXISTS kidsmin
+DROP DATABASE IF EXISTS kidsmin;
+CREATE DATABASE kidsmin
   DEFAULT CHARACTER SET utf8mb4
   DEFAULT COLLATE utf8mb4_0900_ai_ci;
 USE kidsmin;
 
--- ---------------------------------------------------------
--- Drop in dependency order (idempotent for local resets)
--- ---------------------------------------------------------
+SET NAMES utf8mb4;
+SET time_zone = '+00:00';
+
+-- Drop in FK-safe order
+SET FOREIGN_KEY_CHECKS = 0;
+DROP VIEW IF EXISTS v_active_roles;
+DROP VIEW IF EXISTS v_entity_text;
 DROP TABLE IF EXISTS role_assignment;
+DROP TABLE IF EXISTS twofactor_challenge;
 DROP TABLE IF EXISTS credentials;
 DROP TABLE IF EXISTS individual;
 DROP TABLE IF EXISTS entity;
 DROP TABLE IF EXISTS denomination;
+SET FOREIGN_KEY_CHECKS = 1;
 
--- ---------------------------------------------------------
--- Denominations (e.g., default + others you add later)
--- ---------------------------------------------------------
+-- =====================================================================
+-- Reference tables
+-- =====================================================================
+
+-- Denominations (BIGINT id)
 CREATE TABLE denomination (
   id         BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  code       VARCHAR(16)     NOT NULL,
-  name       VARCHAR(255)    NOT NULL,
-  is_active  TINYINT(1)      NOT NULL DEFAULT 1,
-  created_at TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP       NULL     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  name       VARCHAR(200)  NOT NULL,
+  code       VARCHAR(32)   NULL,
+  created_at TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uq_denomination_code (code),
-  UNIQUE KEY uq_denomination_name (name)
+  UNIQUE KEY uq_denomination_code (code)
 ) ENGINE=InnoDB;
 
--- ---------------------------------------------------------
--- Entities (National → Regional → District → Church)
--- parent_entity_id links the hierarchy
--- ---------------------------------------------------------
+-- Entities (hierarchy, UUID ids)
 CREATE TABLE entity (
-  id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  denomination_id  BIGINT UNSIGNED NULL,
-  parent_entity_id BIGINT UNSIGNED NULL,
-  name             VARCHAR(255)    NOT NULL,
-  level            VARCHAR(16)     NOT NULL,
-  created_at       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at       TIMESTAMP       NULL     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  id              BINARY(16) NOT NULL,
+  name            VARCHAR(200) NOT NULL,
+  level           ENUM('DENOMINATION','NATIONAL','REGIONAL','DISTRICT','CHURCH') NOT NULL,
+  parent_id       BINARY(16) NULL,
+  denomination_id BIGINT UNSIGNED NULL,
+  created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_entity_parent (parent_entity_id),
-  KEY idx_entity_denomination (denomination_id),
   KEY idx_entity_level (level),
-  CONSTRAINT chk_entity_level
-    CHECK (level IN ('NATIONAL','REGIONAL','DISTRICT','CHURCH')),
-  CONSTRAINT fk_entity_parent
-    FOREIGN KEY (parent_entity_id) REFERENCES entity(id) ON DELETE SET NULL,
-  CONSTRAINT fk_entity_denomination
-    FOREIGN KEY (denomination_id) REFERENCES denomination(id) ON DELETE SET NULL
+  KEY idx_entity_parent (parent_id),
+  KEY idx_entity_denom (denomination_id),
+  CONSTRAINT fk_entity_parent FOREIGN KEY (parent_id) REFERENCES entity(id) ON DELETE SET NULL,
+  CONSTRAINT fk_entity_denom  FOREIGN KEY (denomination_id) REFERENCES denomination(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
--- ---------------------------------------------------------
--- Individuals (people)
--- grade limited to Adult/12/11/10/9 per current rules
--- ---------------------------------------------------------
+-- People (UUID ids)
 CREATE TABLE individual (
-  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  first_name  VARCHAR(100)    NOT NULL,
-  last_name   VARCHAR(100)    NOT NULL,
-  grade       VARCHAR(16)     NOT NULL DEFAULT 'Adult',
-  special     TINYINT(1)      NOT NULL DEFAULT 0,
-  created_by  BIGINT UNSIGNED NULL,
-  created_at  TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at  TIMESTAMP       NULL     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  id          BINARY(16)   NOT NULL,
+  first_name  VARCHAR(100) NOT NULL,
+  last_name   VARCHAR(100) NOT NULL,
+  grade       ENUM('Adult','12','11','10','9') NOT NULL DEFAULT 'Adult',
+  special     TINYINT(1)   NOT NULL DEFAULT 0,
+  created_by  BINARY(16)   NULL,
+  created_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   KEY idx_individual_name (last_name, first_name),
-  CONSTRAINT chk_individual_grade
-    CHECK (grade IN ('Adult','12','11','10','9')),
-  CONSTRAINT fk_individual_created_by
-    FOREIGN KEY (created_by) REFERENCES individual(id) ON DELETE SET NULL
+  KEY idx_individual_grade (grade),
+  CONSTRAINT fk_individual_creator FOREIGN KEY (created_by) REFERENCES individual(id) ON DELETE SET NULL
 ) ENGINE=InnoDB;
 
--- ---------------------------------------------------------
--- Credentials (login). Email is case-insensitive UNIQUE.
--- One credentials row per individual.
--- ---------------------------------------------------------
+-- =====================================================================
+-- Auth: credentials (+ phone & 2FA prefs) + single-row 2FA challenge
+-- =====================================================================
+
 CREATE TABLE credentials (
-  id             BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  individual_id  BIGINT UNSIGNED NOT NULL,
-  email          VARCHAR(320)    NOT NULL,
-  password_hash  VARCHAR(255)    NULL,
-  is_active      TINYINT(1)      NOT NULL DEFAULT 0,
-  created_at     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at     TIMESTAMP       NULL     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-  -- Normalized (lower/trim) email for uniqueness
-  email_lc       VARCHAR(320) GENERATED ALWAYS AS (LOWER(TRIM(email))) STORED,
-
+  id             BINARY(16)   NOT NULL,
+  individual_id  BINARY(16)   NOT NULL,
+  email          VARCHAR(320) NOT NULL,
+  email_lc       VARCHAR(320) GENERATED ALWAYS AS (LOWER(email)) STORED,
+  phone_e164     VARCHAR(20)  NULL,  -- e.g., +15551234567
+  twofa_preferred ENUM('email','sms') NOT NULL DEFAULT 'email',
+  twofa_enabled  TINYINT(1)   NOT NULL DEFAULT 0,
+  password_hash  VARCHAR(255) NULL,
+  is_active      TINYINT(1)   NOT NULL DEFAULT 0,
+  last_login     TIMESTAMP    NULL,
+  created_at     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uq_credentials_email (email_lc),
   UNIQUE KEY uq_credentials_individual (individual_id),
-  CONSTRAINT fk_credentials_individual
-    FOREIGN KEY (individual_id) REFERENCES individual(id) ON DELETE CASCADE,
-  CONSTRAINT chk_credentials_email_format
-    CHECK (email REGEXP '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$')
+  UNIQUE KEY uq_credentials_email_ci (email_lc),
+  KEY idx_credentials_active (is_active),
+  CONSTRAINT fk_credentials_individual FOREIGN KEY (individual_id) REFERENCES individual(id) ON DELETE CASCADE,
+  CONSTRAINT chk_credentials_phone CHECK (phone_e164 IS NULL OR phone_e164 REGEXP '^\\+[0-9]{7,15}$')
 ) ENGINE=InnoDB;
 
--- ---------------------------------------------------------
--- Role assignments (ties an individual to an entity w/ role)
--- Use '9999-12-31' as your “active forever” sentinel
--- ---------------------------------------------------------
+-- Single-row 2FA challenge per credentials
+CREATE TABLE twofactor_challenge (
+  credentials_id BINARY(16)  NOT NULL,
+  code_hash      VARCHAR(255) NOT NULL,
+  channel        ENUM('email','sms') NOT NULL DEFAULT 'email',
+  attempts       TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  expires_at     TIMESTAMP NOT NULL,
+  created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (credentials_id),
+  KEY idx_tfc_expires (expires_at),
+  CONSTRAINT fk_tfc_credentials FOREIGN KEY (credentials_id) REFERENCES credentials(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- =====================================================================
+-- Roles & assignments (UUID ids)
+-- =====================================================================
+
 CREATE TABLE role_assignment (
-  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  individual_id BIGINT UNSIGNED NOT NULL,
-  target_type   VARCHAR(16)     NOT NULL DEFAULT 'ENTITY',
-  target_id     BIGINT UNSIGNED NOT NULL,   -- references entity.id
-  role          VARCHAR(16)     NOT NULL,
-  active        DATE            NOT NULL DEFAULT '9999-12-31', -- sentinel end date
-  created_at    TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at    TIMESTAMP       NULL     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  id             BINARY(16)  NOT NULL,
+  individual_id  BINARY(16)  NOT NULL,
+  target_type    ENUM('ENTITY') NOT NULL DEFAULT 'ENTITY',
+  target_id      BINARY(16)  NOT NULL,  -- references entity.id
+  role           ENUM('CMC','CDR','POG','COACH','ADMIN') NOT NULL,
+  active         DATE        NOT NULL DEFAULT '9999-12-31',
+  created_at     TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at     TIMESTAMP   NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  KEY idx_role_by_individual (individual_id),
-  KEY idx_role_by_target (target_id),
-  KEY idx_role_active (active),
-  CONSTRAINT chk_role_assignment_target_type
-    CHECK (target_type IN ('ENTITY')),
-  CONSTRAINT chk_role_assignment_role
-    CHECK (role IN ('CMC','CDR','POG','COACH','ADMIN')),
-  CONSTRAINT fk_role_individual
-    FOREIGN KEY (individual_id) REFERENCES individual(id) ON DELETE CASCADE,
-  CONSTRAINT fk_role_entity
-    FOREIGN KEY (target_id) REFERENCES entity(id) ON DELETE CASCADE
+  KEY idx_ra_individual (individual_id),
+  KEY idx_ra_target (target_type, target_id),
+  KEY idx_ra_active (active),
+  CONSTRAINT fk_ra_individual FOREIGN KEY (individual_id) REFERENCES individual(id) ON DELETE CASCADE,
+  CONSTRAINT fk_ra_entity     FOREIGN KEY (target_id)     REFERENCES entity(id)     ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
--- ---------------------------------------------------------
--- Helpful views (optional)
--- ---------------------------------------------------------
-DROP VIEW IF EXISTS v_current_roles;
-CREATE VIEW v_current_roles AS
+-- =====================================================================
+-- Auto-ID triggers (generate UUID if NULL on insert) — not used for denomination
+-- =====================================================================
+
+DELIMITER $$
+
+CREATE TRIGGER trg_entity_bi
+BEFORE INSERT ON entity
+FOR EACH ROW
+BEGIN
+  IF NEW.id IS NULL THEN SET NEW.id = UUID_TO_BIN(UUID(), 1); END IF;
+END$$
+
+CREATE TRIGGER trg_individual_bi
+BEFORE INSERT ON individual
+FOR EACH ROW
+BEGIN
+  IF NEW.id IS NULL THEN SET NEW.id = UUID_TO_BIN(UUID(), 1); END IF;
+END$$
+
+CREATE TRIGGER trg_credentials_bi
+BEFORE INSERT ON credentials
+FOR EACH ROW
+BEGIN
+  IF NEW.id IS NULL THEN SET NEW.id = UUID_TO_BIN(UUID(), 1); END IF;
+END$$
+
+CREATE TRIGGER trg_role_assignment_bi
+BEFORE INSERT ON role_assignment
+FOR EACH ROW
+BEGIN
+  IF NEW.id IS NULL THEN SET NEW.id = UUID_TO_BIN(UUID(), 1); END IF;
+END$$
+
+DELIMITER ;
+
+-- =====================================================================
+-- Helpful views (UUIDs as text for debugging)
+-- =====================================================================
+
+DROP VIEW IF EXISTS v_entity_text;
+CREATE VIEW v_entity_text AS
 SELECT
-  ra.id,
-  ra.individual_id,
-  ra.target_id      AS entity_id,
-  e.name            AS entity_name,
-  e.level           AS entity_level,
+  BIN_TO_UUID(e.id, 1)               AS id,
+  e.name,
+  e.level,
+  BIN_TO_UUID(e.parent_id, 1)        AS parent_id,
+  e.denomination_id,
+  e.created_at, e.updated_at
+FROM entity e;
+
+DROP VIEW IF EXISTS v_active_roles;
+CREATE VIEW v_active_roles AS
+SELECT
+  BIN_TO_UUID(ra.id, 1)              AS id,
+  BIN_TO_UUID(ra.individual_id, 1)   AS individual_id,
+  ra.target_type,
+  BIN_TO_UUID(ra.target_id, 1)       AS target_id,
+  e.name                              AS target_name,
+  e.level                             AS target_level,
   ra.role,
   ra.active,
   ra.created_at,
   ra.updated_at
 FROM role_assignment ra
-JOIN entity e ON e.id = ra.target_id
+LEFT JOIN entity e ON e.id = ra.target_id
 WHERE ra.active = '9999-12-31';
 
--- ---------------------------------------------------------
--- (Optional) minimal seeds for a clean start
--- You can let your /createAdmin endpoint create these instead.
--- ---------------------------------------------------------
-/*
-INSERT INTO denomination (code, name) VALUES ('GEN', 'General / Default');
+-- =====================================================================
+-- Seeds
+-- =====================================================================
+
+-- 1) Default denomination
+INSERT INTO denomination (name, code)
+VALUES ('Default', 'DEFAULT')
+ON DUPLICATE KEY UPDATE name=VALUES(name), code=VALUES(code);
+
+-- 2) Entities (National -> Regions -> Districts), with stable UUIDs
+-- National (parent NULL)
+INSERT INTO entity (id, name, level, parent_id)
+VALUES (UUID_TO_BIN('00000000-0000-0000-0000-000000000000', 1), 'National', 'NATIONAL', NULL)
+AS new
+ON DUPLICATE KEY UPDATE name=new.name, level=new.level, parent_id=new.parent_id;
+
+-- Regions (parent = National)
 INSERT INTO entity (id, name, level, parent_id) VALUES
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000000'), 'National', 'REGIONAL', UUID_TO_BIN('00000000-0000-0000-0000-000000000000')),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000001', 1), 'Northwest',     'REGIONAL', UUID_TO_BIN('00000000-0000-0000-0000-000000000000', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000002', 1), 'North Central', 'REGIONAL', UUID_TO_BIN('00000000-0000-0000-0000-000000000000', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000003', 1), 'Southwest',     'REGIONAL', UUID_TO_BIN('00000000-0000-0000-0000-000000000000', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000004', 1), 'South Central', 'REGIONAL', UUID_TO_BIN('00000000-0000-0000-0000-000000000000', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000005', 1), 'Gulf',          'REGIONAL', UUID_TO_BIN('00000000-0000-0000-0000-000000000000', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000006', 1), 'Southeast',     'REGIONAL', UUID_TO_BIN('00000000-0000-0000-0000-000000000000', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000007', 1), 'Great Lakes',   'REGIONAL', UUID_TO_BIN('00000000-0000-0000-0000-000000000000', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000008', 1), 'Northeast',     'REGIONAL', UUID_TO_BIN('00000000-0000-0000-0000-000000000000', 1))
+AS new
+ON DUPLICATE KEY UPDATE name=new.name, level=new.level, parent_id=new.parent_id;
 
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000001'), 'Northwest', 'REGIONAL', UUID_TO_BIN('00000000-0000-0000-0000-000000000000')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000002'), 'North Central', 'REGIONAL', UUID_TO_BIN('00000000-0000-0000-0000-000000000000')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000003'), 'Southwest', 'REGIONAL', UUID_TO_BIN('00000000-0000-0000-0000-000000000000')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000004'), 'South Central', 'REGIONAL', UUID_TO_BIN('00000000-0000-0000-0000-000000000000')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000005'), 'Gulf', 'REGIONAL', UUID_TO_BIN('00000000-0000-0000-0000-000000000000')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000006'), 'Southeast', 'REGIONAL', UUID_TO_BIN('00000000-0000-0000-0000-000000000000')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000007'), 'Great Lakes', 'REGIONAL', UUID_TO_BIN('00000000-0000-0000-0000-000000000000')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000008'), 'Northeast', 'REGIONAL', UUID_TO_BIN('00000000-0000-0000-0000-000000000000')),
+-- Districts under each Region
+INSERT INTO entity (id, name, level, parent_id) VALUES
+  -- Region: Northwest (…0001)
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000009', 1), 'Alaska',      'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000001', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000010', 1), 'Northwest',   'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000001', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000011', 1), 'Montana',     'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000001', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000012', 1), 'Oregon',      'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000001', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000013', 1), 'South Idaho', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000001', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000014', 1), 'Wyoming',     'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000001', 1)),
 
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000009'), 'Alaska', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000001')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000010'), 'Northwest', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000001')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000011'), 'Montana', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000001')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000012'), 'Oregon', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000001')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000013'), 'South Idaho', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000001')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000014'), 'Wyoming', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000001')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000015'), 'North Dakota', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000002')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000016'), 'South Dakota', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000002')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000017'), 'Nebraska', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000002')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000018'), 'Minnesota', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000002')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000019'), 'Iowa', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000002')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000020'), 'Wisconsin / Northern Michigan', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000002')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000021'), 'Northern Missouri', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000002')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000022'), 'Northern California / Nevada', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000003')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000023'), 'Rocky Mountain', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000003')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000024'), 'Southern California', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000003')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000025'), 'Arizona', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000003')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000026'), 'Hawaii', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000003')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000027'), 'Kansas', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000004')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000028'), 'Oklahoma', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000004')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000029'), 'New Mexico', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000004')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000030'), 'West Texas', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000004')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000031'), 'North Texas', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000004')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000032'), 'South Texas', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000004')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000033'), 'Southern Missouri', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000005')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000034'), 'Arkansas', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000005')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000035'), 'Tennesee', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000005')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000036'), 'Mississippi', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000005')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000037'), 'Lousiana', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000005')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000038'), 'North Carolina', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000006')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000039'), 'South Carolina', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000006')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000040'), 'Alabama', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000006')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000041'), 'Georgia', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000006')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000042'), 'West Florida', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000006')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000043'), 'Peninsula Florida', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000006')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000044'), 'Puerto Rico', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000006')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000045'), 'Michigan', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000007')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000046'), 'Illinois', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000007')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000047'), 'Indiana', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000007')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000048'), 'Ohio', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000007')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000049'), 'Kentucky', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000007')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000050'), 'Appalachian', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000008')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000051'), 'Potomac', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000008')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000052'), 'Pennsylvania - Delaware', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000008')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000053'), 'New Jersey', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000008')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000054'), 'New York', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000008')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000055'), 'Southern New England', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000008')),
-  (UUID_TO_BIN('00000000-0000-0000-0000-000000000056'), 'Northern New England', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000008'))
-ON DUPLICATE KEY UPDATE name=VALUES(name), level=VALUES(level), parent_id=VALUES(parent_id);
-*/
+  -- Region: North Central (…0002)
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000015', 1), 'North Dakota',  'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000002', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000016', 1), 'South Dakota',  'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000002', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000017', 1), 'Nebraska',      'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000002', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000018', 1), 'Minnesota',     'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000002', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000019', 1), 'Iowa',          'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000002', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000020', 1), 'Wisconsin / Northern Michigan', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000002', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000021', 1), 'Northern Missouri', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000002', 1)),
 
--- =========================================================
--- Done. Create a DB user (optional example for local dev):
--- =========================================================
-/*
-CREATE USER 'kidsmin'@'%' IDENTIFIED BY 'change_me';
-GRANT SELECT, INSERT, UPDATE, DELETE ON kidsmin.* TO 'kidsmin'@'%';
-FLUSH PRIVILEGES;
-*/
+  -- Region: Southwest (…0003)
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000022', 1), 'Northern California / Nevada', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000003', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000023', 1), 'Rocky Mountain', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000003', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000024', 1), 'Southern California', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000003', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000025', 1), 'Arizona',         'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000003', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000026', 1), 'Hawaii',          'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000003', 1)),
+
+  -- Region: South Central (…0004)
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000027', 1), 'Kansas',      'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000004', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000028', 1), 'Oklahoma',    'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000004', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000029', 1), 'New Mexico',  'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000004', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000030', 1), 'West Texas',  'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000004', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000031', 1), 'North Texas', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000004', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000032', 1), 'South Texas', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000004', 1)),
+
+  -- Region: Gulf (…0005)
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000033', 1), 'Southern Missouri', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000005', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000034', 1), 'Arkansas',        'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000005', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000035', 1), 'Tennessee',       'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000005', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000036', 1), 'Mississippi',     'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000005', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000037', 1), 'Louisiana',       'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000005', 1)),
+
+  -- Region: Southeast (…0006)
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000038', 1), 'North Carolina',   'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000006', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000039', 1), 'South Carolina',   'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000006', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000040', 1), 'Alabama',          'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000006', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000041', 1), 'Georgia',          'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000006', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000042', 1), 'West Florida',     'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000006', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000043', 1), 'Peninsula Florida','DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000006', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000044', 1), 'Puerto Rico',      'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000006', 1)),
+
+  -- Region: Great Lakes (…0007)
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000045', 1), 'Michigan',       'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000007', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000046', 1), 'Illinois',       'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000007', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000047', 1), 'Indiana',        'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000007', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000048', 1), 'Ohio',           'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000007', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000049', 1), 'Kentucky',       'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000007', 1)),
+
+  -- Region: Northeast (…0008)
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000050', 1), 'Appalachian',        'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000008', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000051', 1), 'Potomac',            'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000008', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000052', 1), 'Pennsylvania - Delaware', 'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000008', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000053', 1), 'New Jersey',         'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000008', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000054', 1), 'New York',           'DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000008', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000055', 1), 'Southern New England','DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000008', 1)),
+  (UUID_TO_BIN('00000000-0000-0000-0000-000000000056', 1), 'Northern New England','DISTRICT', UUID_TO_BIN('00000000-0000-0000-0000-000000000008', 1))
+AS new
+ON DUPLICATE KEY UPDATE name=new.name, level=new.level, parent_id=new.parent_id;
+
+-- 3) Assign all seeded entities to the Default denomination (optional but handy)
+SET @denom_id := (SELECT id FROM denomination WHERE code='DEFAULT' LIMIT 1);
+UPDATE entity SET denomination_id = @denom_id WHERE denomination_id IS NULL;
+
+-- =====================================================================
+-- Usage notes
+-- =====================================================================
+-- Insert with generated UUID (efficient order):
+--   INSERT INTO individual (id, first_name, last_name)
+--   VALUES (UUID_TO_BIN(UUID(), 1), 'Jane', 'Doe');
+-- Query with text UUIDs:
+--   SELECT BIN_TO_UUID(id, 1) AS id, name, level FROM entity WHERE level='REGIONAL';
