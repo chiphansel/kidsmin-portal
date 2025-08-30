@@ -43,20 +43,22 @@ CREATE TABLE denomination (
 
 -- Entities (hierarchy, UUID ids)
 CREATE TABLE entity (
-  id              BINARY(16) NOT NULL,
-  name            VARCHAR(200) NOT NULL,
+  id              BINARY(16) NOT NULL PRIMARY KEY
+                  DEFAULT (UUID_TO_BIN(UUID(), 1)),
+  name            VARCHAR(120) NOT NULL,
   level           ENUM('DENOMINATION','NATIONAL','REGIONAL','DISTRICT','CHURCH') NOT NULL,
   parent_id       BINARY(16) NULL,
-  denomination_id BIGINT UNSIGNED NULL,
+  denomination_id BIGINT NOT NULL,
   created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (id),
-  KEY idx_entity_level (level),
-  KEY idx_entity_parent (parent_id),
-  KEY idx_entity_denom (denomination_id),
-  CONSTRAINT fk_entity_parent FOREIGN KEY (parent_id) REFERENCES entity(id) ON DELETE SET NULL,
-  CONSTRAINT fk_entity_denom  FOREIGN KEY (denomination_id) REFERENCES denomination(id) ON DELETE SET NULL
-) ENGINE=InnoDB;
+  CONSTRAINT fk_entity_parent
+    FOREIGN KEY (parent_id) REFERENCES entity(id) ON DELETE SET NULL,
+  CONSTRAINT fk_entity_denom
+    FOREIGN KEY (denomination_id) REFERENCES denomination(id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- ✅ New index for fast parent lookups (hierarchy/recursive queries)
+CREATE INDEX idx_entity_parent ON entity (parent_id);
 
 -- People (UUID ids)
 CREATE TABLE individual (

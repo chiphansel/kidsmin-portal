@@ -7,6 +7,9 @@ require('dotenv').config(); // loads .env.* into process.env
 const config = require('./config');
 
 const app = express();
+app.use(express.json());
+
+const PORT = process.env.PORT || 3000;
 
 // CORS
 app.use(cors({
@@ -22,8 +25,9 @@ app.use(morgan('dev'));
 // Health
 app.get('/healthz', (_req, res) => res.json({ ok: true, env: config.NODE_ENV }));
 
-// API
-app.use('/api', require('./api/routes'));
+// 👉 new: load the API router from ./api
+const apiRouter = require('./api/routes');
+app.use('/api', apiRouter);
 
 // 404
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));

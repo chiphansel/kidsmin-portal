@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "bcrypt": "^5.1.1",
+    "bcryptjs": "^3.0.2",
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
@@ -25,5 +26,11 @@
   "devDependencies": {
     "cross-env": "^7.0.3",
     "eslint": "^9.7.0"
-  }
+  },
+  "version": "1.0.0",
+  "description": "```bash cp .env.example .env.development # edit values npm ci npm run start:dev ```",
+  "main": "authMiddleware.js",
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
 }
