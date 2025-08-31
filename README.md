@@ -37,9 +37,9 @@ git add .
 git commit -m "chore: initial monorepo (backend + frontend skeleton)"
 git branch -M main
 # HTTPS
-git remote add origin https://gitlab.com/<your-namespace>/kidsmin-portal.git
+git remote add origin https://github.com/chiphansel/kidsmin-portal.git
 git push -u origin main
 # or SSH
-git remote add origin git@gitlab.com:<your-namespace>/kidsmin-portal.git
+git remote add origin git@github.com:chiphansel/kidsmin-portal.git
 git push -u origin main
 ```
